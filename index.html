@@ -99,7 +99,7 @@ const MOODS = {
   neutral:  {name:"Calm",     emoji:"😐", color:"#9fb4c7"},
   moody:    {name:"Moody",    emoji:"😒", color:"#7b6cf6"},
   love:     {name:"Love",     emoji:"😍", color:"#ff5fa2"},
-  sexy:     {name:"Emotional",     emoji:"😏", color:"#e6397a"}
+  emotional:     {name:"Emotional",     emoji:"😏", color:"#e6397a"}
 };
 
 const $ = id => document.getElementById(id);
@@ -134,7 +134,7 @@ function blend(e){
   const s = {...e};
   s.moody = Math.min(1, e.sad*0.6 + e.angry*0.6 + e.disgusted*0.5 + e.neutral*0.3);
   s.love  = Math.min(1, e.happy*0.55 + e.surprised*0.9 + e.neutral*0.05);
-  s.sexy  = Math.min(1, e.neutral*0.35 + e.happy*0.3 + e.sad*0.15);
+  s.emotional  = Math.min(1, e.neutral*0.35 + e.happy*0.3 + e.sad*0.15);
   return s;
 }
 

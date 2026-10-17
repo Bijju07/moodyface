@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mood Mirror</title>
+<style>
+  :root{
+    --ink:#f4ece6; --bg:#1b1424; --panel:#271c33; --line:#3d2d4d; --muted:#a898b8;
+    --accent:#ff7a59; --mood:#ff7a59;
+    color-scheme: dark;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:"Trebuchet MS",Verdana,sans-serif;min-height:100vh;
+    transition:background .6s}
+  main{max-width:520px;margin:0 auto;padding:18px 16px 40px}
+  h1{font-size:1.7rem;margin:6px 0 2px;letter-spacing:.5px}
+  .sub{color:var(--muted);margin:0 0 14px;font-size:.95rem}
+  .stage{position:relative;border-radius:22px;overflow:hidden;background:#000;aspect-ratio:3/4;
+    border:3px solid var(--mood);box-shadow:0 0 38px color-mix(in srgb,var(--mood) 45%,transparent);transition:border-color .5s, box-shadow .5s}
+  video,canvas#shot{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+  video{transform:scaleX(-1)}
+  canvas#shot{display:none}
+  .stage.captured canvas#shot{display:block}
+  .stage.captured video{display:none}
+  .badge{position:absolute;left:12px;right:12px;bottom:12px;background:rgba(20,12,28,.78);backdrop-filter:blur(6px);
+    border-radius:16px;padding:10px 14px;display:none;align-items:center;gap:12px}
+  .stage.captured .badge{display:flex}
+  .emoji{font-size:2.6rem;line-height:1}
+  .badge b{font-size:1.35rem;display:block}
+  .badge span{color:var(--muted);font-size:.85rem}
+  .msg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px;color:var(--muted)}
+  .row{display:flex;gap:10px;margin:14px 0}
+  button{flex:1;border:0;border-radius:14px;padding:14px;font-size:1rem;font-weight:700;cursor:pointer;
+    background:var(--accent);color:#1b1424;font-family:inherit}
+  button.ghost{background:var(--panel);color:var(--ink);border:1px solid var(--line)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  button:focus-visible{outline:3px solid var(--ink);outline-offset:2px}
+  .bars{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:14px;display:none}
+  .bars.show{display:block}
+  .bar{display:grid;grid-template-columns:92px 1fr 42px;align-items:center;gap:8px;margin:7px 0;font-size:.9rem}
+  .track{height:10px;background:var(--line);border-radius:8px;overflow:hidden}
+  .fill{height:100%;width:0;background:var(--accent);border-radius:8px;transition:width .6s}
+  .bar.top .fill{background:var(--mood)}
+  .bar.top{font-weight:700}
+  .note{color:var(--muted);font-size:.78rem;margin-top:12px;line-height:1.45}
+  #status{color:var(--muted);font-size:.85rem;margin:0 0 8px;min-height:1.2em}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<main>
+  <h1>Mood Mirror</h1>
+  <p class="sub">Click a selfie. Get your face mood.</p>
+  <p id="status">Loading face model…</p>
+
+  <div class="stage" id="stage">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="shot"></canvas>
+    <div class="msg" id="msg">Tap “Start camera” and allow camera access.</div>
+    <div class="badge" id="badge">
+      <div class="emoji" id="emoji">🙂</div>
+      <div><b id="moodName">—</b><span id="moodSub"></span></div>
+    </div>
+  </div>
+
+  <div class="row">
+    <button id="startBtn">Start camera</button>
+    <button id="snapBtn" disabled>Click photo</button>
+  </div>
+  <div class="row">
+    <button class="ghost" id="retakeBtn" disabled>Retake</button>
+    <button class="ghost" id="saveBtn" disabled>Save photo</button>
+  </div>
+
+  <div class="bars" id="bars"></div>
+
+  <p class="note">The face model reads 7 basic expressions: happy, sad, angry, surprised, fearful, disgusted, neutral. Moody, Love and Sexy are fun blends made from those scores, so treat them as a game, not a real reading of your feelings. The photo stays on your device.</p>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js"></script>
+<script>
+const MODEL_URL = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/";
+const MOODS = {
+  happy:    {name:"Happy",    emoji:"😄", color:"#ffd23f"},
+  sad:      {name:"Sad",      emoji:"😢", color:"#5aa9ff"},
+  angry:    {name:"Angry",    emoji:"😠", color:"#ff4d4d"},
+  surprised:{name:"Surprised",emoji:"😲", color:"#ffa94d"},
+  fearful:  {name:"Scared",   emoji:"😨", color:"#a78bfa"},
+  disgusted:{name:"Disgusted",emoji:"🤢", color:"#8fd14f"},
+  neutral:  {name:"Calm",     emoji:"😐", color:"#9fb4c7"},
+  moody:    {name:"Moody",    emoji:"😒", color:"#7b6cf6"},
+  love:     {name:"Love",     emoji:"😍", color:"#ff5fa2"},
+  sexy:     {name:"Sexy",     emoji:"😏", color:"#e6397a"}
+};
+
+const $ = id => document.getElementById(id);
+const video=$("video"), shot=$("shot"), stage=$("stage");
+let stream=null, modelsReady=false;
+
+async function loadModels(){
+  try{
+    await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+    await faceapi.nets.faceExpressionNet.loadFromUri(MODEL_URL);
+    modelsReady=true; $("status").textContent="Model ready.";
+  }catch(e){
+    $("status").textContent="Could not load the face model. Check your internet and reload.";
+  }
+}
+loadModels();
+
+$("startBtn").onclick = async () => {
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:"user",width:{ideal:960},height:{ideal:1280}},audio:false});
+    video.srcObject = stream;
+    $("msg").style.display="none";
+    $("snapBtn").disabled=false;
+    $("startBtn").disabled=true;
+  }catch(e){
+    $("msg").textContent="Camera blocked. Allow camera access in your browser settings, and open this page over https or from a local file.";
+  }
+};
+
+function blend(e){
+  const s = {...e};
+  s.moody = Math.min(1, e.sad*0.6 + e.angry*0.6 + e.disgusted*0.5 + e.neutral*0.3);
+  s.love  = Math.min(1, e.happy*0.55 + e.surprised*0.9 + e.neutral*0.05);
+  s.sexy  = Math.min(1, e.neutral*0.35 + e.happy*0.3 + e.sad*0.15);
+  return s;
+}
+
+$("snapBtn").onclick = async () => {
+  if(!modelsReady){ $("status").textContent="Model is still loading, wait a moment."; return; }
+  const w=video.videoWidth, h=video.videoHeight;
+  shot.width=w; shot.height=h;
+  const ctx=shot.getContext("2d");
+  ctx.save(); ctx.translate(w,0); ctx.scale(-1,1); ctx.drawImage(video,0,0,w,h); ctx.restore();
+  stage.classList.add("captured");
+  $("status").textContent="Reading your face…";
+
+  const det = await faceapi.detectSingleFace(shot, new faceapi.TinyFaceDetectorOptions({inputSize:416,scoreThreshold:0.4})).withFaceExpressions();
+  $("retakeBtn").disabled=false; $("saveBtn").disabled=false; $("snapBtn").disabled=true;
+
+  if(!det){
+    $("status").textContent="No face found. Face the light, keep your face inside the frame, and retake.";
+    $("emoji").textContent="🫥"; $("moodName").textContent="No face"; $("moodSub").textContent="Try again";
+    return;
+  }
+  const scores = blend(det.expressions);
+  const ranked = Object.entries(scores).sort((a,b)=>b[1]-a[1]);
+  const [topKey, topVal] = ranked[0];
+  const m = MOODS[topKey];
+
+  const b = det.detection.box;
+  ctx.lineWidth=Math.max(3,w/160); ctx.strokeStyle=m.color; ctx.strokeRect(b.x,b.y,b.width,b.height);
+
+  document.documentElement.style.setProperty("--mood", m.color);
+  $("emoji").textContent=m.emoji; $("moodName").textContent=m.name;
+  $("moodSub").textContent=Math.round(topVal*100)+"% match";
+  $("status").textContent="Done.";
+
+  $("bars").innerHTML = ranked.map(([k,v],i)=>`
+    <div class="bar ${i===0?"top":""}"><span>${MOODS[k].emoji} ${MOODS[k].name}</span>
+    <div class="track"><div class="fill" data-w="${Math.round(v*100)}"></div></div><span>${Math.round(v*100)}%</span></div>`).join("");
+  $("bars").classList.add("show");
+  requestAnimationFrame(()=>document.querySelectorAll(".fill").forEach(f=>f.style.width=f.dataset.w+"%"));
+};
+
+$("retakeBtn").onclick = () => {
+  stage.classList.remove("captured");
+  $("bars").classList.remove("show");
+  $("snapBtn").disabled=false; $("retakeBtn").disabled=true; $("saveBtn").disabled=true;
+  $("status").textContent="Model ready.";
+};
+
+$("saveBtn").onclick = () => {
+  const a=document.createElement("a");
+  a.href=shot.toDataURL("image/png"); a.download="mood-"+Date.now()+".png"; a.click();
+};
+</script>
+</body>
+</html>

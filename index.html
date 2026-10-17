@@ -43,6 +43,13 @@
   .fill{height:100%;width:0;background:var(--accent);border-radius:8px;transition:width .6s}
   .bar.top .fill{background:var(--mood)}
   .bar.top{font-weight:700}
+  .feats{display:none;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
+  .feats.show{display:grid}
+  .feat{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:12px;display:flex;align-items:center;gap:10px}
+  .feat:last-child{grid-column:1/-1}
+  .fe{font-size:1.8rem;line-height:1}
+  .feat b{display:block;font-size:.95rem}
+  .feat span{color:var(--muted);font-size:.82rem}
   .note{color:var(--muted);font-size:.78rem;margin-top:12px;line-height:1.45}
   #status{color:var(--muted);font-size:.85rem;margin:0 0 8px;min-height:1.2em}
   @media (prefers-reduced-motion:reduce){*{transition:none!important}}
@@ -74,8 +81,9 @@
   </div>
 
   <div class="bars" id="bars"></div>
+  <div class="feats" id="feats"></div>
 
-  <p class="note">The face model reads 7 basic expressions: happy, sad, angry, surprised, fearful, disgusted, neutral. Moody, Love and Sexy are fun blends made from those scores, so treat them as a game, not a real reading of your feelings. The photo stays on your device.</p>
+  <p class="note">The face model reads 7 basic expressions: happy, sad, angry, surprised, fearful, disgusted, neutral. Moody, Love and Sexy are fun blends made from those scores, so treat them as a game, not a real reading of your feelings. Eyes, eyebrows, lips and nose are traced from 68 face points. The model has no ear points, so ears are dashed estimates beside the face. The photo stays on your device.</p>
 </main>
 
 <script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js"></script>
@@ -102,6 +110,7 @@ async function loadModels(){
   try{
     await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
     await faceapi.nets.faceExpressionNet.loadFromUri(MODEL_URL);
+    await faceapi.nets.faceLandmark68TinyNet.loadFromUri(MODEL_URL);
     modelsReady=true; $("status").textContent="Model ready.";
   }catch(e){
     $("status").textContent="Could not load the face model. Check your internet and reload.";
@@ -129,6 +138,72 @@ function blend(e){
   return s;
 }
 
+const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
+function path(ctx,pts,close){
+  ctx.beginPath(); pts.forEach((p,i)=>i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y));
+  if(close) ctx.closePath(); ctx.stroke();
+}
+function analyzeFace(det,ctx,color,w){
+  const L=det.landmarks, jaw=L.getJawOutline(), le=L.getLeftEye(), re=L.getRightEye(),
+        nose=L.getNose(), mouth=L.getMouth(), lb=L.getLeftEyeBrow(), rb=L.getRightEyeBrow();
+  const fw=dist(jaw[0],jaw[16]);
+
+  // draw eyes, brows, nose, lips, jaw
+  ctx.lineWidth=Math.max(2,w/260); ctx.strokeStyle=color; ctx.lineJoin="round";
+  path(ctx,le,true); path(ctx,re,true); path(ctx,lb,false); path(ctx,rb,false);
+  path(ctx,nose.slice(0,4),false); path(ctx,nose.slice(4),false);
+  path(ctx,mouth.slice(0,12),true); path(ctx,mouth.slice(12),true);
+  path(ctx,jaw,false);
+
+  // ears: estimated zones at each side of the face (the model has no ear points)
+  const earY=(nose[0].y+nose[6].y)/2, er=fw*0.07;
+  ctx.setLineDash([6,5]);
+  [[jaw[0].x-fw*0.03,-1],[jaw[16].x+fw*0.03,1]].forEach(([x])=>{
+    ctx.beginPath(); ctx.ellipse(x,earY,er*0.7,er*1.6,0,0,Math.PI*2); ctx.stroke();
+  });
+  ctx.setLineDash([]);
+
+  // eyes
+  const eyeAR=e=>(dist(e[1],e[5])+dist(e[2],e[4]))/(2*dist(e[0],e[3]));
+  const EAR=(eyeAR(le)+eyeAR(re))/2;
+  const eyes = EAR<0.17?["😑","Closed or squinting"]:EAR<0.23?["😌","Relaxed, half open"]:EAR<0.32?["👀","Open and alert"]:["😳","Wide open"];
+
+  // brows
+  const bd=(dist(lb[2],le[1])+dist(rb[2],re[1]))/2/fw;
+  const brows = bd>0.115?["🤨","Raised"]:bd<0.07?["😠","Lowered, tense"]:["🙂","Neutral"];
+
+  // lips
+  const mw=dist(mouth[0],mouth[6]);
+  const open=dist(mouth[14],mouth[18])/mw;
+  const lift=((mouth[3].y+mouth[9].y)/2-(mouth[0].y+mouth[6].y)/2)/mw;
+  const wide=mw/fw;
+  const lips = open>0.35?["😮","Open wide"]
+    : (lift>0.08||wide>0.47)?["😁","Big smile"]
+    : lift>0.03?["🙂","Soft smile"]
+    : lift<-0.03?["🙁","Corners turned down"]
+    : (open<0.05&&wide<0.36)?["😶","Pressed together"]
+    : ["😐","Neutral"];
+
+  // nose
+  const noseLen=dist(nose[0],nose[6]);
+  const lipGap=(mouth[3].y-nose[6].y)/noseLen;
+  const flare=dist(nose[4],nose[8])/fw;
+  const noseT = lipGap<0.3?["😤","Scrunched, tense"]:flare>0.29?["🐽","Nostrils flared"]:["👃","Relaxed"];
+
+  // ears / head pose
+  const yaw=dist(nose[6],jaw[0])/dist(nose[6],jaw[16]);
+  const tilt=Math.atan2(re[3].y-le[3].y,re[3].x-le[3].x)*180/Math.PI;
+  const turned=(yaw>1.4||yaw<0.71);
+  const earsT = turned?["👂","Head turned, one ear hidden"]
+    : Math.abs(tilt)>8?["🙃","Head tilted, both ears in view"]
+    : ["👂","Both ears facing camera"];
+
+  const rows=[["Eyes",eyes],["Eyebrows",brows],["Lips",lips],["Nose",noseT],["Ears",earsT]];
+  $("feats").innerHTML=rows.map(([n,[e,t]])=>
+    `<div class="feat"><div class="fe">${e}</div><div><b>${n}</b><span>${t}</span></div></div>`).join("");
+  $("feats").classList.add("show");
+}
+
 $("snapBtn").onclick = async () => {
   if(!modelsReady){ $("status").textContent="Model is still loading, wait a moment."; return; }
   const w=video.videoWidth, h=video.videoHeight;
@@ -138,7 +213,7 @@ $("snapBtn").onclick = async () => {
   stage.classList.add("captured");
   $("status").textContent="Reading your face…";
 
-  const det = await faceapi.detectSingleFace(shot, new faceapi.TinyFaceDetectorOptions({inputSize:416,scoreThreshold:0.4})).withFaceExpressions();
+  const det = await faceapi.detectSingleFace(shot, new faceapi.TinyFaceDetectorOptions({inputSize:416,scoreThreshold:0.4})).withFaceLandmarks(true).withFaceExpressions();
   $("retakeBtn").disabled=false; $("saveBtn").disabled=false; $("snapBtn").disabled=true;
 
   if(!det){
@@ -153,6 +228,7 @@ $("snapBtn").onclick = async () => {
 
   const b = det.detection.box;
   ctx.lineWidth=Math.max(3,w/160); ctx.strokeStyle=m.color; ctx.strokeRect(b.x,b.y,b.width,b.height);
+  analyzeFace(det,ctx,m.color,w);
 
   document.documentElement.style.setProperty("--mood", m.color);
   $("emoji").textContent=m.emoji; $("moodName").textContent=m.name;
@@ -169,6 +245,7 @@ $("snapBtn").onclick = async () => {
 $("retakeBtn").onclick = () => {
   stage.classList.remove("captured");
   $("bars").classList.remove("show");
+  $("feats").classList.remove("show");
   $("snapBtn").disabled=false; $("retakeBtn").disabled=true; $("saveBtn").disabled=true;
   $("status").textContent="Model ready.";
 };
@@ -179,4 +256,4 @@ $("saveBtn").onclick = () => {
 };
 </script>
 </body>
-</html>
+  </html>
